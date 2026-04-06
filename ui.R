@@ -18,6 +18,10 @@ page_navbar(
       .card-header { background:#2EC4B6; color:#0b172a; font-weight:600; }
       /* plotly background */
       .js-plotly-plot .plotly .main-svg { background:transparent !important; }
+      /* Compact value boxes */
+      .bslib-value-box .value-box-value { font-size: 1.2rem !important; }
+      .bslib-value-box .value-box-title { font-size: 0.85rem !important; }
+      .bslib-value-box .value-box-showcase .fa { font-size: 2rem !important; }
     "))
   ),
 
@@ -33,8 +37,18 @@ page_navbar(
         div(class = "card-header", "Secure Gateway"),
         div(
           class = "card-body",
-          selectInput("user_id_field", "Research ID",
-                      choices = c("Select your ID" = "", valid_patient_ids)),
+          radioButtons("login_role", "I am a:",
+                       choices  = c("Patient", "Clinician"),
+                       selected = "Patient", inline = TRUE),
+          conditionalPanel(
+            condition = "input.login_role == 'Patient'",
+            selectInput("user_id_field", "Research ID",
+                        choices = c("Select your ID" = "", valid_patient_ids))
+          ),
+          conditionalPanel(
+            condition = "input.login_role == 'Clinician'",
+            passwordInput("clinician_password", "Clinician Code")
+          ),
           actionButton("login_button", "Enter Dashboard",
                        class = "btn-primary w-100 mt-2")
         )
@@ -47,24 +61,52 @@ page_navbar(
     title = "Overview",
     icon  = icon("chart-pie"),
     value = "overview_tab",
+    conditionalPanel(
+      condition = "output.is_clinician == true",
+      div(
+        class = "mb-3",
+        selectInput("clinician_filter_id", "Filter by Research ID",
+                    choices = c("All" = "All", valid_patient_ids),
+                    width = "300px")
+      )
+    ),
     layout_columns(
       col_widths = c(4, 4, 4),
-      value_box("Patient ID",    textOutput("ov_id"),   showcase = icon("id-card"),
+      value_box("Patient ID",    uiOutput("ov_id_card"), showcase = icon("id-card"),
                 theme = "primary"),
-      value_box("Diagnosis",     textOutput("ov_diag"), showcase = icon("stethoscope"),
+      value_box("Diagnosis",     uiOutput("ov_diag_card"), showcase = icon("stethoscope"),
                 theme = "secondary"),
       value_box("Treatment",     textOutput("ov_treat"), showcase = icon("pills"),
                 theme = "info")
     ),
-    layout_columns(
-      col_widths = c(6, 6),
-      card(
-        card_header("Patient Details"),
-        DTOutput("ov_table")
-      ),
-      card(
-        card_header("Samples Available"),
-        DTOutput("ov_samples")
+    # Patient view: Top taxa (left) + GE pie chart (right)
+    conditionalPanel(
+      condition = "output.is_clinician != true",
+      layout_columns(
+        col_widths = c(7, 5),
+        card(
+          card_header(icon("bacteria"), " Top Taxa Carrying Genetic Elements"),
+          uiOutput("ov_top_taxa_list")
+        ),
+        card(
+          card_header("Genetic Elements Detected"),
+          plotlyOutput("ov_ge_pie", height = "320px")
+        )
+      )
+    ),
+    # Clinician view: original tables
+    conditionalPanel(
+      condition = "output.is_clinician == true",
+      layout_columns(
+        col_widths = c(6, 6),
+        card(
+          card_header("Patient Details"),
+          DTOutput("ov_table")
+        ),
+        card(
+          card_header("Samples Available"),
+          DTOutput("ov_samples_clin")
+        )
       )
     )
   ),
@@ -79,9 +121,12 @@ page_navbar(
         title = "Options",
         selectInput("alpha_index", "Diversity Index",
                     choices = c("Richness", "Shannon")),
-        selectInput("alpha_group", "Group by",
-                    choices = c("Sample type" = "type",
-                                "Diagnosis"   = "Immunodeficiency_diagnosis")),
+        conditionalPanel(
+          condition = "output.is_clinician == true",
+          selectInput("alpha_group", "Group by",
+                      choices = c("Sample type" = "type",
+                                  "Diagnosis"   = "Immunodeficiency_diagnosis"))
+        ),
         width = 250
       ),
       layout_columns(
@@ -137,7 +182,12 @@ page_navbar(
         width = 250
       ),
       card(
-        card_header("Relative Abundance — Stacked Bar Chart"),
+        card_header(
+          class = "d-flex justify-content-between align-items-center",
+          "Relative Abundance — Stacked Bar Chart",
+          actionButton("expand_tax_bar", label = NULL, icon = icon("expand"),
+                       class = "btn btn-sm btn-outline-light")
+        ),
         plotlyOutput("tax_bar", height = "600px")
       ),
       layout_columns(
@@ -171,7 +221,12 @@ page_navbar(
         width = 250
       ),
       card(
-        card_header("Gene Presence / Abundance Heatmap"),
+        card_header(
+          class = "d-flex justify-content-between align-items-center",
+          "Gene Presence / Abundance Heatmap",
+          actionButton("expand_patho_heatmap", label = NULL, icon = icon("expand"),
+                       class = "btn btn-sm btn-outline-light")
+        ),
         plotOutput("patho_heatmap", height = "700px")
       ),
       layout_columns(
@@ -183,6 +238,41 @@ page_navbar(
         card(
           card_header("Gene Summary Table"),
           DTOutput("patho_table")
+        )
+      )
+    )
+  ),
+
+  # ── Summary Report tab ──────────────────────────────────────────────────────
+  nav_panel(
+    title = "Summary Report",
+    icon  = icon("file-medical"),
+    value = "summary_tab",
+    layout_sidebar(
+      sidebar = sidebar(
+        title = "Options",
+        sliderInput("summary_top_n", "Top N species", min = 3, max = 20,
+                    value = 5, step = 1),
+        conditionalPanel(
+          condition = "output.is_clinician == true",
+          selectInput("summary_filter_id", "Research ID",
+                      choices = c("All" = "All", valid_patient_ids))
+        ),
+        width = 250
+      ),
+      card(
+        card_header("Top Species & Drug Resistance Profile"),
+        DTOutput("summary_species_table")
+      ),
+      layout_columns(
+        col_widths = c(6, 6),
+        card(
+          card_header("Species Abundance"),
+          plotlyOutput("summary_species_bar", height = "450px")
+        ),
+        card(
+          card_header("Drug Resistance Classes"),
+          plotlyOutput("summary_drug_bar", height = "450px")
         )
       )
     )

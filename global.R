@@ -71,8 +71,19 @@ bracken_merged <- bracken_pivoted %>%
 genetable_normdata <- genetable_normdata_raw %>%
   inner_join(patient_metadata, by = "ID")
 
+# ── ABRicate + Kraken2/Bracken merged (species ↔ gene ↔ resistance) ──────────
+abri_kraken2Bracken <- abri_kraken2Bracken_raw %>%
+  distinct(GENE, sequence, .keep_all = TRUE) %>%
+  filter(
+    !grepl("Terrabacteria group|Bacteroidota/Chlorobiota group|FCB group|Cyanobacteriota/Melainabacteria group", name),
+    str_count(name, "\\S+") > 1
+  )
+
 # ── Valid patient IDs for login ───────────────────────────────────────────────
 valid_patient_ids <- sort(unique(patient_metadata$ID))
+
+# ── Clinician access code ────────────────────────────────────────────────────
+CLINICIAN_CODE <- "ebreath2024"
 
 # ── E-Breathomics bslib theme ────────────────────────────────────────────────
 e_theme <- bs_theme(
