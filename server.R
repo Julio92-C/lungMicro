@@ -45,8 +45,18 @@ function(input, output, session) {
     }
   })
 
-  # Reactive: the active Research ID (patient's own or clinician's filter)
+  # Reactive: the active Research ID (patient's own ID; clinicians get "All")
   active_id <- reactive({
+    req(logged_in())
+    if (user_role() == "patient") {
+      user_id()
+    } else {
+      "All"
+    }
+  })
+
+  # Reactive: Overview-specific Research ID (clinician filter is local to Overview)
+  overview_id <- reactive({
     req(logged_in())
     if (user_role() == "patient") {
       user_id()
@@ -55,17 +65,17 @@ function(input, output, session) {
     }
   })
 
-  # Reactive: selected patient data
+  # Reactive: selected patient data (Overview tab)
   patient <- reactive({
     req(logged_in())
-    rid <- active_id()
+    rid <- overview_id()
     if (is.null(rid) || rid == "All") return(patient_metadata)
     patient_metadata %>% filter(ID == as.numeric(rid))
   })
 
   patient_samples <- reactive({
     req(logged_in())
-    rid <- active_id()
+    rid <- overview_id()
     if (is.null(rid) || rid == "All") return(sample_metadata)
     sample_metadata %>% filter(ID == as.numeric(rid))
   })
@@ -75,7 +85,7 @@ function(input, output, session) {
   # ══════════════════════════════════════════════════════════════════════════
   output$ov_id_card <- renderUI({
     req(patient())
-    rid <- active_id()
+    rid <- overview_id()
     if (is.null(rid) || rid == "All") {
       tags$span("All Patients")
     } else {
@@ -89,7 +99,7 @@ function(input, output, session) {
   })
   output$ov_diag_card <- renderUI({
     req(patient())
-    rid <- active_id()
+    rid <- overview_id()
     if (is.null(rid) || rid == "All") {
       tags$span("—")
     } else {
@@ -103,7 +113,7 @@ function(input, output, session) {
   })
   output$ov_treat <- renderText({
     req(patient())
-    rid <- active_id()
+    rid <- overview_id()
     if (is.null(rid) || rid == "All") "—" else patient()$Treatment[1]
   })
 
@@ -558,6 +568,12 @@ function(input, output, session) {
     # Filter to patient's samples when applicable
     if (!is.null(rid) && rid != "All") {
       df <- df %>% filter(ID == as.numeric(rid))
+    }
+
+    # Clinician diagnosis filter
+    if (identical(user_role(), "clinician") &&
+        !is.null(input$tax_diagnosis) && input$tax_diagnosis != "All") {
+      df <- df %>% filter(Immunodeficiency_diagnosis == input$tax_diagnosis)
     }
 
     if (input$tax_type != "All") {

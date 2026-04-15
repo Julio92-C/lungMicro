@@ -175,6 +175,12 @@ page_navbar(
     layout_sidebar(
       sidebar = sidebar(
         title = "Options",
+        conditionalPanel(
+          condition = "output.is_clinician == true",
+          selectInput("tax_diagnosis", "Diagnosis",
+                      choices = c("All", "CVID", "XLA", "HG", "SID"),
+                      selected = "CVID")
+        ),
         selectInput("tax_type", "Sample Type",
                     choices = c("All", "Exhale", "Sputum")),
         sliderInput("tax_top_n", "Top N genera", min = 10, max = 50,
