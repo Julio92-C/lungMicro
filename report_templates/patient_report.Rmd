@@ -1,0 +1,253 @@
+---
+title: ""
+output:
+  pdf_document:
+    latex_engine: pdflatex
+    keep_tex: false
+header-includes:
+  - \usepackage{geometry}
+  - \geometry{margin=1in}
+  - \usepackage{xcolor}
+  - \definecolor{navy}{HTML}{0b172a}
+  - \definecolor{teal}{HTML}{2EC4B6}
+  - \definecolor{purple}{HTML}{8E44AD}
+  - \definecolor{blue}{HTML}{4a91e2}
+  - \usepackage{fancyhdr}
+  - \pagestyle{fancy}
+  - \fancyhf{}
+  - \fancyhead[L]{\textcolor{teal}{\textbf{E-Breathomics}}}
+  - \fancyhead[R]{\textcolor{teal}{Your Microbiome Results}}
+  - \fancyfoot[C]{\textcolor{gray}{\thepage}}
+  - \renewcommand{\headrulewidth}{0.5pt}
+  - \renewcommand{\headrule}{\hbox to\headwidth{\color{teal}\leaders\hrule height \headrulewidth\hfill}}
+  - \usepackage{booktabs}
+  - \usepackage{float}
+params:
+  patient_id: NULL
+  patient_info: NULL
+  top_species_df: NULL
+  drug_resistance_df: NULL
+  alpha_diversity_df: NULL
+  ge_summary_df: NULL
+  report_date: NULL
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, warning = FALSE, message = FALSE,
+  fig.align = "center", fig.pos = "H",
+  dev = "cairo_pdf"
+)
+library(ggplot2)
+library(dplyr)
+library(knitr)
+
+# E-Breathomics colour palette
+eb_navy  <- "#0b172a"
+eb_teal  <- "#2EC4B6"
+eb_blue  <- "#4a91e2"
+eb_purple <- "#8E44AD"
+eb_cream <- "#FAF0E6"
+eb_coral <- "#f2615a"
+
+# Base theme for all plots — dark background matching the app
+eb_theme <- theme_minimal(base_size = 12) +
+  theme(
+    plot.background  = element_rect(fill = eb_navy, colour = NA),
+    panel.background = element_rect(fill = eb_navy, colour = NA),
+    panel.grid.major = element_line(colour = "#1a2f4e", linewidth = 0.3),
+    panel.grid.minor = element_blank(),
+    text             = element_text(colour = eb_cream),
+    axis.text        = element_text(colour = eb_cream, size = 10),
+    axis.title       = element_text(colour = eb_cream, size = 11),
+    plot.title       = element_text(colour = eb_teal, face = "bold", size = 14),
+    plot.subtitle    = element_text(colour = eb_cream, size = 10),
+    legend.background = element_rect(fill = eb_navy, colour = NA),
+    legend.text      = element_text(colour = eb_cream),
+    legend.title     = element_text(colour = eb_teal),
+    plot.margin      = margin(10, 10, 10, 10)
+  )
+```
+
+\begin{center}
+{\Huge\textcolor{teal}{\textbf{Your Microbiome Results}}}
+
+\vspace{0.3cm}
+{\large Report generated on `r params$report_date`}
+
+\vspace{0.1cm}
+{\small Research ID: \textbf{`r params$patient_id`}}
+\end{center}
+
+\vspace{0.3cm}
+\noindent\textcolor{teal}{\rule{\textwidth}{1pt}}
+
+# About You
+
+This report summarises the findings from the microbiome analysis of your respiratory samples. The results below provide an overview of the bacteria detected, their diversity, and any antibiotic resistance genes identified.
+
+```{r patient_table}
+info <- params$patient_info
+
+patient_df <- data.frame(
+  Field = c("Research ID", "Age", "Sex", "Diagnosis", "Treatment",
+            "Samples Analysed", "Sample Types"),
+  Value = c(
+    as.character(info$id),
+    paste0(info$age, " years"),
+    info$sex,
+    info$diagnosis,
+    info$treatment,
+    as.character(info$n_samples),
+    info$sample_types
+  )
+)
+
+kable(patient_df, col.names = c("", ""), booktabs = TRUE, align = c("l", "l"))
+```
+
+\vspace{0.5cm}
+
+# What We Found in Your Samples
+
+We analysed your respiratory samples to identify which bacteria are present. The chart below shows the most abundant species detected. These are organisms commonly found in the respiratory tract — some are part of the normal flora, while others may be of clinical interest.
+
+```{r species_bar, fig.width=7, fig.height=4.5, out.width="100%"}
+df <- params$top_species_df
+
+if (nrow(df) > 0) {
+  # Create a teal-to-purple gradient for bars
+  n <- nrow(df)
+  bar_colours <- colorRampPalette(c(eb_teal, eb_blue, eb_purple))(n)
+
+  ggplot(df, aes(x = reorder(Species, Total_Count), y = Total_Count)) +
+    geom_col(fill = rev(bar_colours), width = 0.7) +
+    coord_flip() +
+    scale_y_log10(labels = scales::comma_format()) +
+    labs(
+      title = "Top Species Detected",
+      subtitle = paste0("Showing top ", n, " species by total read count"),
+      x = NULL, y = "Total Count (log scale)"
+    ) +
+    eb_theme
+} else {
+  ggplot() +
+    annotate("text", x = 0.5, y = 0.5, label = "No species data available",
+             colour = eb_cream, size = 5) +
+    eb_theme + theme(axis.text = element_blank(), axis.title = element_blank())
+}
+```
+
+```{r species_text, results='asis'}
+if (nrow(params$top_species_df) > 0) {
+  top1 <- params$top_species_df$Species[1]
+  n_total <- nrow(params$top_species_df)
+  cat(paste0(
+    "The most abundant organism in your samples was ***", top1,
+    "***. A total of **", n_total,
+    " species** are shown above. Your clinician can help interpret which of these findings are clinically relevant for you."
+  ))
+}
+```
+
+\vspace{0.5cm}
+
+# Antibiotic Resistance Profile
+
+Some bacteria carry genes that can make them resistant to certain antibiotics. We screened your samples for these **antibiotic resistance genes (ARGs)** and summarised the results below.
+
+```{r arg_table}
+drug_df <- params$drug_resistance_df
+
+if (nrow(drug_df) > 0) {
+  display_df <- drug_df %>%
+    select(Species, `Resistance Genes` = n_ARGs, `Drug Classes` = Drug_Classes) %>%
+    arrange(desc(`Resistance Genes`))
+
+  kable(display_df, booktabs = TRUE, align = c("l", "c", "l"),
+        caption = "Species carrying antibiotic resistance genes")
+} else {
+  cat("*No antibiotic resistance genes were detected in your samples.*\n")
+}
+```
+
+```{r drug_class_bar, fig.width=7, fig.height=4, out.width="100%"}
+if (nrow(drug_df) > 0) {
+  # Expand drug classes
+  drug_classes <- drug_df %>%
+    tidyr::separate_rows(Drug_Classes, sep = ", ") %>%
+    group_by(Drug_Classes) %>%
+    summarise(n_genes = sum(n_ARGs), .groups = "drop") %>%
+    filter(Drug_Classes != "") %>%
+    arrange(desc(n_genes))
+
+  if (nrow(drug_classes) > 0) {
+    ggplot(drug_classes, aes(x = reorder(Drug_Classes, n_genes), y = n_genes)) +
+      geom_col(fill = eb_coral, width = 0.7) +
+      coord_flip() +
+      labs(
+        title = "Drug Resistance Classes",
+        subtitle = "Number of resistance genes per antibiotic class",
+        x = NULL, y = "Number of ARGs"
+      ) +
+      eb_theme
+  }
+}
+```
+
+> **Note:** Detecting resistance genes does not necessarily mean that antibiotics will not work for you. These results indicate genetic *potential* for resistance. Your doctor can use this information alongside clinical tests to guide treatment decisions.
+
+\vspace{0.5cm}
+
+# Diversity of Your Microbiome
+
+Microbial diversity measures how many different types of organisms are present in your samples and how evenly they are distributed. **Higher diversity** is generally associated with a healthier microbiome.
+
+We calculated two standard diversity measures for each of your samples:
+
+- **Richness** — the total number of different species detected
+- **Shannon Index** — a measure that accounts for both the number of species and their relative abundance (higher values = more diverse)
+
+```{r diversity_table}
+alpha_df <- params$alpha_diversity_df
+
+if (nrow(alpha_df) > 0) {
+  display_alpha <- alpha_df %>%
+    select(Sample, `Sample Type` = type, Richness, `Shannon Index` = Shannon)
+
+  kable(display_alpha, booktabs = TRUE, align = c("l", "l", "c", "c"),
+        caption = "Diversity metrics per sample")
+} else {
+  cat("*Diversity data not available.*\n")
+}
+```
+
+```{r diversity_text, results='asis'}
+if (nrow(alpha_df) > 0) {
+  avg_shannon <- round(mean(alpha_df$Shannon, na.rm = TRUE), 2)
+  avg_richness <- round(mean(alpha_df$Richness, na.rm = TRUE), 0)
+
+  level <- if (avg_shannon >= 3) {
+    "high"
+  } else if (avg_shannon >= 2) {
+    "moderate"
+  } else {
+    "low"
+  }
+
+  cat(paste0(
+    "Across your samples, the average number of species detected was **",
+    avg_richness, "** and the average Shannon diversity index was **",
+    avg_shannon, "**, indicating **", level, " diversity**."
+  ))
+}
+```
+
+\vspace{1cm}
+\noindent\textcolor{teal}{\rule{\textwidth}{1pt}}
+\begin{center}
+{\small\textcolor{gray}{Report generated on `r params$report_date` by E-Breathomics v0.1}}
+
+\vspace{0.2cm}
+{\footnotesize\textcolor{gray}{\textit{This report is for informational purposes only and does not constitute medical advice. Please discuss these results with your healthcare provider.}}}
+\end{center}

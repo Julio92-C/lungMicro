@@ -264,6 +264,13 @@ page_navbar(
           selectInput("summary_filter_id", "Research ID",
                       choices = c("All" = "All", valid_patient_ids))
         ),
+        conditionalPanel(
+          condition = "output.is_clinician != true",
+          hr(),
+          downloadButton("download_patient_pdf", "Download Your Report",
+                         class = "btn-primary w-100",
+                         icon = icon("file-pdf"))
+        ),
         width = 250
       ),
       card(

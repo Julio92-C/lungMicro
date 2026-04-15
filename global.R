@@ -15,6 +15,8 @@ library(paletteer)
 library(pheatmap)
 library(patchwork)
 library(DT)
+library(knitr)
+library(rmarkdown)
 
 # ── Data paths ───────────────────────────────────────────────────────────────
 DATA_DIR     <- "C:/Users/julio/OneDrive/Desktop/Lung_microbiome/Datasets"

@@ -338,6 +338,127 @@ function(input, output, session) {
   })
 
   # ══════════════════════════════════════════════════════════════════════════
+  # PATIENT PDF REPORT DOWNLOAD
+  # ══════════════════════════════════════════════════════════════════════════
+  output$download_patient_pdf <- downloadHandler(
+    filename = function() {
+      paste0("microbiome_report_", user_id(), "_", Sys.Date(), ".pdf")
+    },
+    content = function(file) {
+      withProgress(message = "Generating your report...", value = 0.1, {
+
+        rid <- user_id()
+        rid_num <- as.numeric(rid)
+
+        # 1. Patient info
+        pat <- patient_metadata %>% filter(ID == rid_num) %>% distinct(ID, .keep_all = TRUE)
+        pat_samples <- sample_metadata %>% filter(ID == rid_num)
+
+        patient_info <- list(
+          id           = rid,
+          age          = pat$Age[1],
+          sex          = pat$Sex[1],
+          diagnosis    = pat$Immunodeficiency_diagnosis[1],
+          treatment    = pat$Treatment[1],
+          n_samples    = nrow(pat_samples),
+          sample_types = paste(unique(pat_samples$type), collapse = ", ")
+        )
+
+        setProgress(0.3)
+
+        # 2. Top species
+        src <- abri_kraken2Bracken %>% filter(ID == rid_num)
+        top_species_df <- src %>%
+          group_by(name) %>%
+          summarise(Total_Count = sum(TotalBCount, na.rm = TRUE), .groups = "drop") %>%
+          arrange(desc(Total_Count)) %>%
+          slice_head(n = 10) %>%
+          mutate(Species = str_replace(name, "^(\\w)\\w+\\s", "\\1. "))
+
+        setProgress(0.4)
+
+        # 3. Drug resistance
+        drug_resistance_df <- src %>%
+          filter(DATABASE == "card", !is.na(RESISTANCE)) %>%
+          group_by(name) %>%
+          summarise(
+            n_ARGs = n_distinct(GENE),
+            Drug_Classes = paste(sort(unique(na.omit(unlist(str_split(RESISTANCE, ";"))))),
+                                 collapse = ", "),
+            .groups = "drop"
+          ) %>%
+          mutate(Species = str_replace(name, "^(\\w)\\w+\\s", "\\1. "))
+
+        setProgress(0.5)
+
+        # 4. Alpha diversity
+        base_df <- bracken_merged %>%
+          filter(ID == rid_num, type != "Control", sample != "EB-42D") %>%
+          filter(!grepl("Terrabacteria group|Bacteroidota/Chlorobiota group|FCB group", name)) %>%
+          filter(str_count(name, "\\S+") > 1)
+
+        if (nrow(base_df) > 0) {
+          mat_df <- base_df %>%
+            select(sample, name, log_count) %>%
+            pivot_wider(names_from = name, values_from = log_count,
+                        values_fill = 0, values_fn = sum) %>%
+            distinct(sample, .keep_all = TRUE) %>%
+            column_to_rownames("sample")
+          abundance_matrix <- as.matrix(mat_df)
+          alpha_diversity_df <- data.frame(
+            Sample   = rownames(abundance_matrix),
+            Richness = as.numeric(vegan::specnumber(abundance_matrix)),
+            Shannon  = round(as.numeric(vegan::diversity(abundance_matrix,
+                                                         index = "shannon")), 2)
+          ) %>%
+            inner_join(base_df %>% select(sample, type) %>% distinct(),
+                       by = c("Sample" = "sample"))
+        } else {
+          alpha_diversity_df <- data.frame(Sample = character(), Richness = numeric(),
+                                           Shannon = numeric(), type = character())
+        }
+
+        setProgress(0.6)
+
+        # 5. Genetic elements summary
+        ge_summary_df <- genetable_normdata %>%
+          filter(ID == rid_num) %>%
+          group_by(DATABASE) %>%
+          summarise(n_genes = n_distinct(GENE), .groups = "drop") %>%
+          mutate(Category = case_when(
+            DATABASE == "card"          ~ "Antibiotic Resistance Genes",
+            DATABASE == "vfdb"          ~ "Virulence Factors",
+            DATABASE == "plasmidfinder" ~ "Mobile Genetic Elements",
+            TRUE                        ~ DATABASE
+          ))
+
+        setProgress(0.8)
+
+        # 6. Render Rmd in tempdir to avoid OneDrive locking
+        temp_rmd <- file.path(tempdir(), "patient_report.Rmd")
+        file.copy("report_templates/patient_report.Rmd", temp_rmd, overwrite = TRUE)
+
+        rmarkdown::render(
+          input       = temp_rmd,
+          output_file = file,
+          params = list(
+            patient_id        = rid,
+            patient_info       = patient_info,
+            top_species_df     = top_species_df,
+            drug_resistance_df = drug_resistance_df,
+            alpha_diversity_df = alpha_diversity_df,
+            ge_summary_df      = ge_summary_df,
+            report_date        = format(Sys.Date(), "%d %B %Y")
+          ),
+          envir = new.env(parent = globalenv())
+        )
+
+        setProgress(1)
+      })
+    }
+  )
+
+  # ══════════════════════════════════════════════════════════════════════════
   # ALPHA DIVERSITY TAB
   # ══════════════════════════════════════════════════════════════════════════
   alpha_data <- reactive({
