@@ -262,7 +262,11 @@ page_navbar(
         conditionalPanel(
           condition = "output.is_clinician == true",
           selectInput("summary_filter_id", "Research ID",
-                      choices = c("All" = "All", valid_patient_ids))
+                      choices = c("All" = "All", valid_patient_ids)),
+          hr(),
+          downloadButton("download_clinician_pdf", "Download Clinical Report",
+                         class = "btn-primary w-100",
+                         icon = icon("file-pdf"))
         ),
         conditionalPanel(
           condition = "output.is_clinician != true",

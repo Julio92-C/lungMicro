@@ -459,6 +459,316 @@ function(input, output, session) {
   )
 
   # ══════════════════════════════════════════════════════════════════════════
+  # CLINICIAN PDF REPORT DOWNLOAD
+  # ══════════════════════════════════════════════════════════════════════════
+  output$download_clinician_pdf <- downloadHandler(
+    filename = function() {
+      rid <- input$summary_filter_id
+      if (is.null(rid) || rid == "All") {
+        paste0("cohort_report_", Sys.Date(), ".pdf")
+      } else {
+        paste0("clinical_report_", rid, "_", Sys.Date(), ".pdf")
+      }
+    },
+    content = function(file) {
+      withProgress(message = "Generating clinical report...", value = 0.1, {
+
+        rid <- input$summary_filter_id
+        is_cohort <- is.null(rid) || rid == "All"
+
+        # ── Shared base data ─────────────────────────────────────────────
+        base_bracken <- bracken_merged %>%
+          filter(type != "Control", sample != "EB-42D") %>%
+          filter(!grepl("Terrabacteria group|Bacteroidota/Chlorobiota group|FCB group", name)) %>%
+          filter(str_count(name, "\\S+") > 1)
+
+        # ── Alpha diversity (full cohort always) ─────────────────────────
+        mat_all <- base_bracken %>%
+          select(sample, name, log_count) %>%
+          pivot_wider(names_from = name, values_from = log_count,
+                      values_fill = 0, values_fn = sum) %>%
+          distinct(sample, .keep_all = TRUE) %>%
+          column_to_rownames("sample")
+        abund_all <- as.matrix(mat_all)
+
+        cohort_alpha_df <- data.frame(
+          Sample   = rownames(abund_all),
+          Richness = as.numeric(vegan::specnumber(abund_all)),
+          Shannon  = round(as.numeric(vegan::diversity(abund_all, index = "shannon")), 2)
+        ) %>%
+          inner_join(
+            base_bracken %>%
+              select(sample, ID, type, Immunodeficiency_diagnosis) %>% distinct(),
+            by = c("Sample" = "sample")
+          )
+
+        setProgress(0.2)
+
+        # ── PCoA + PERMANOVA ─────────────────────────────────────────────
+        rel_matrix <- vegan::decostand(abund_all, method = "hellinger")
+        clean_matrix <- na.omit(rel_matrix)
+        bc_dist  <- vegan::vegdist(clean_matrix, method = "bray")
+        pcoa_res <- cmdscale(bc_dist, eig = TRUE, k = 2)
+        eig_vals <- pcoa_res$eig
+        var_expl <- eig_vals / sum(eig_vals) * 100
+
+        pcoa_df <- data.frame(
+          sample = rownames(clean_matrix),
+          PC1    = pcoa_res$points[, 1],
+          PC2    = pcoa_res$points[, 2]
+        ) %>%
+          inner_join(
+            base_bracken %>%
+              select(sample, ID, type, Immunodeficiency_diagnosis) %>% distinct(),
+            by = "sample"
+          )
+
+        # Highlight for individual mode
+        if (!is_cohort) {
+          pcoa_df <- pcoa_df %>% mutate(highlight = ID == as.numeric(rid))
+        } else {
+          pcoa_df <- pcoa_df %>% mutate(highlight = FALSE)
+        }
+
+        pcoa_data <- list(pcoa_df = pcoa_df, var_expl = var_expl)
+
+        # PERMANOVA
+        meta_perm <- pcoa_df %>% distinct(sample, .keep_all = TRUE) %>%
+          column_to_rownames("sample")
+        permanova_diag <- as.data.frame(vegan::adonis2(
+          bc_dist ~ Immunodeficiency_diagnosis, data = meta_perm,
+          permutations = 999, method = "bray"
+        ))
+        permanova_type <- as.data.frame(vegan::adonis2(
+          bc_dist ~ type, data = meta_perm,
+          permutations = 999, method = "bray"
+        ))
+
+        setProgress(0.4)
+
+        # ── Taxonomy ─────────────────────────────────────────────────────
+        tax_base <- bracken_merged %>%
+          filter(type != "Control", sample != "EB-42D") %>%
+          filter(!grepl("Terrabacteria group|Bacteroidota/Chlorobiota group|FCB group|Cyanobacteriota/Melainabacteria group|Enterobacteriaceae|Bacillota|Klebsiella/Raoultella group", name)) %>%
+          filter(str_count(name, "\\S+") > 1) %>%
+          mutate(genus = str_extract(name, "^\\w+")) %>%
+          filter(count > 1) %>%
+          group_by(sample) %>%
+          mutate(Percentage = (count / sum(count)) * 100) %>%
+          ungroup()
+
+        if (!is_cohort) {
+          tax_base <- tax_base %>% filter(ID == as.numeric(rid))
+        }
+
+        top_genera <- tax_base %>%
+          group_by(genus) %>%
+          summarise(total = sum(count, na.rm = TRUE), .groups = "drop") %>%
+          arrange(desc(total)) %>%
+          slice_head(n = 20) %>%
+          pull(genus)
+
+        tax_df <- tax_base %>%
+          mutate(genus = ifelse(genus %in% top_genera, genus, "Others")) %>%
+          group_by(sample, genus, type, Immunodeficiency_diagnosis, ID) %>%
+          summarise(Percentage = sum(Percentage), count = sum(count), .groups = "drop")
+
+        setProgress(0.5)
+
+        # ── Species + drug resistance ────────────────────────────────────
+        src <- abri_kraken2Bracken %>%
+          inner_join(patient_metadata %>% select(ID, Immunodeficiency_diagnosis) %>%
+                       distinct(), by = "ID")
+        if (!is_cohort) src <- src %>% filter(ID == as.numeric(rid))
+
+        top_species_df <- src %>%
+          group_by(name) %>%
+          summarise(Total_Count = sum(TotalBCount, na.rm = TRUE), .groups = "drop") %>%
+          arrange(desc(Total_Count)) %>%
+          slice_head(n = if (is_cohort) 10 else 15) %>%
+          mutate(Species = str_replace(name, "^(\\w)\\w+\\s", "\\1. "))
+
+        drug_resistance_df <- src %>%
+          filter(DATABASE == "card", !is.na(RESISTANCE)) %>%
+          group_by(name, Immunodeficiency_diagnosis) %>%
+          summarise(
+            n_ARGs = n_distinct(GENE),
+            Drug_Classes = paste(sort(unique(na.omit(unlist(str_split(RESISTANCE, ";"))))),
+                                 collapse = ", "),
+            .groups = "drop"
+          ) %>%
+          mutate(Species = str_replace(name, "^(\\w)\\w+\\s", "\\1. "))
+
+        setProgress(0.6)
+
+        # ── Pathogenomics heatmap matrix ─────────────────────────────────
+        patho_src <- genetable_normdata %>% filter(TPM >= 10)
+        if (!is_cohort) patho_src <- patho_src %>% filter(ID == as.numeric(rid))
+
+        patho_mat <- NULL
+        patho_ann <- NULL
+
+        if (nrow(patho_src) > 0) {
+          mat_df <- patho_src %>%
+            mutate(log_tpm = log(TPM + 1)) %>%
+            select(sample, GENE, log_tpm) %>%
+            pivot_wider(names_from = sample, values_from = log_tpm,
+                        values_fill = 0, values_fn = sum) %>%
+            distinct(GENE, .keep_all = TRUE) %>%
+            column_to_rownames("GENE")
+          patho_mat <- as.matrix(mat_df)
+          patho_mat <- patho_mat[order(rowSums(patho_mat), decreasing = TRUE), , drop = FALSE]
+          if (nrow(patho_mat) > 50) patho_mat <- patho_mat[1:50, , drop = FALSE]
+
+          patho_ann <- patho_src %>%
+            select(sample, type, Immunodeficiency_diagnosis) %>%
+            distinct() %>%
+            filter(sample %in% colnames(patho_mat)) %>%
+            column_to_rownames("sample")
+        }
+
+        # ── GE summary ──────────────────────────────────────────────────
+        ge_src <- genetable_normdata
+        if (!is_cohort) ge_src <- ge_src %>% filter(ID == as.numeric(rid))
+
+        ge_summary_df <- ge_src %>%
+          group_by(DATABASE) %>%
+          summarise(n_genes = n_distinct(GENE), .groups = "drop") %>%
+          mutate(Category = case_when(
+            DATABASE == "card"          ~ "Antibiotic Resistance Genes",
+            DATABASE == "vfdb"          ~ "Virulence Factors",
+            DATABASE == "plasmidfinder" ~ "Mobile Genetic Elements",
+            TRUE                        ~ DATABASE
+          ))
+
+        setProgress(0.7)
+
+        # ── Mode-specific params ─────────────────────────────────────────
+        patient_info <- NULL
+        full_arg_df  <- NULL
+        vf_df        <- NULL
+        mge_df       <- NULL
+        cohort_summary  <- NULL
+        patient_table   <- NULL
+
+        if (is_cohort) {
+          # Cohort demographics
+          pat_all <- patient_metadata %>% distinct(ID, .keep_all = TRUE)
+          cohort_summary <- list(
+            n_patients  = nrow(pat_all),
+            diag_counts = table(pat_all$Immunodeficiency_diagnosis),
+            sex_counts  = table(pat_all$Sex),
+            age_range   = range(pat_all$Age, na.rm = TRUE),
+            age_mean    = round(mean(pat_all$Age, na.rm = TRUE), 1)
+          )
+
+          # Per-patient summary table
+          pat_species <- abri_kraken2Bracken %>%
+            group_by(ID) %>%
+            summarise(N_Species = n_distinct(name), .groups = "drop")
+          pat_args <- abri_kraken2Bracken %>%
+            filter(DATABASE == "card") %>%
+            group_by(ID) %>%
+            summarise(N_ARGs = n_distinct(GENE), .groups = "drop")
+          pat_shan <- cohort_alpha_df %>%
+            group_by(ID) %>%
+            summarise(Mean_Shannon = round(mean(Shannon, na.rm = TRUE), 2),
+                      .groups = "drop")
+
+          patient_table <- pat_all %>%
+            select(ID, Diagnosis = Immunodeficiency_diagnosis, Sex, Age) %>%
+            left_join(sample_metadata %>% group_by(ID) %>%
+                        summarise(N_Samples = n(), .groups = "drop"), by = "ID") %>%
+            left_join(pat_species, by = "ID") %>%
+            left_join(pat_args, by = "ID") %>%
+            left_join(pat_shan, by = "ID") %>%
+            mutate(N_ARGs = ifelse(is.na(N_ARGs), 0, N_ARGs)) %>%
+            arrange(Diagnosis, ID)
+
+        } else {
+          # Individual patient info
+          rid_num <- as.numeric(rid)
+          pat <- patient_metadata %>% filter(ID == rid_num) %>% distinct(ID, .keep_all = TRUE)
+          pat_samples <- sample_metadata %>% filter(ID == rid_num)
+
+          patient_info <- list(
+            id           = rid,
+            age          = pat$Age[1],
+            sex          = pat$Sex[1],
+            diagnosis    = pat$Immunodeficiency_diagnosis[1],
+            treatment    = pat$Treatment[1],
+            immuno_type  = pat$Immunocompromised_type[1],
+            n_samples    = nrow(pat_samples),
+            sample_types = paste(unique(pat_samples$type), collapse = ", ")
+          )
+
+          # Full ARG list
+          full_arg_df <- src %>%
+            filter(DATABASE == "card") %>%
+            mutate(Species = str_replace(name, "^(\\w)\\w+\\s", "\\1. ")) %>%
+            select(Species, GENE, RESISTANCE, TPM = TotalBCount) %>%
+            distinct()
+
+          # VF and MGE tables
+          vf_df <- ge_src %>%
+            filter(DATABASE == "vfdb") %>%
+            inner_join(abri_kraken2Bracken %>% select(GENE, name) %>% distinct(),
+                       by = "GENE") %>%
+            mutate(Species = str_replace(name, "^(\\w)\\w+\\s", "\\1. ")) %>%
+            select(Species, GENE, TPM) %>% distinct()
+
+          mge_df <- ge_src %>%
+            filter(DATABASE == "plasmidfinder") %>%
+            inner_join(abri_kraken2Bracken %>% select(GENE, name) %>% distinct(),
+                       by = "GENE") %>%
+            mutate(Species = str_replace(name, "^(\\w)\\w+\\s", "\\1. ")) %>%
+            select(Species, GENE, TPM) %>% distinct()
+
+          # Alpha for this patient only
+          cohort_alpha_df_param <- cohort_alpha_df
+          cohort_alpha_df <- cohort_alpha_df %>% filter(ID == rid_num)
+        }
+
+        setProgress(0.85)
+
+        # ── Render ───────────────────────────────────────────────────────
+        temp_rmd <- file.path(tempdir(), "clinician_report.Rmd")
+        file.copy("report_templates/clinician_report.Rmd", temp_rmd, overwrite = TRUE)
+
+        rmarkdown::render(
+          input       = temp_rmd,
+          output_file = file,
+          params = list(
+            mode               = if (is_cohort) "cohort" else "individual",
+            report_date        = format(Sys.Date(), "%d %B %Y"),
+            patient_id         = if (is_cohort) NULL else rid,
+            patient_info       = patient_info,
+            cohort_summary     = cohort_summary,
+            alpha_df           = cohort_alpha_df,
+            cohort_alpha_df    = if (is_cohort) cohort_alpha_df else cohort_alpha_df_param,
+            pcoa_data          = pcoa_data,
+            permanova_diag     = permanova_diag,
+            permanova_type     = permanova_type,
+            tax_df             = tax_df,
+            top_species_df     = top_species_df,
+            drug_resistance_df = drug_resistance_df,
+            full_arg_df        = full_arg_df,
+            vf_df              = vf_df,
+            mge_df             = mge_df,
+            patho_mat          = patho_mat,
+            patho_ann          = patho_ann,
+            ge_summary_df      = ge_summary_df,
+            patient_table      = patient_table
+          ),
+          envir = new.env(parent = globalenv())
+        )
+
+        setProgress(1)
+      })
+    }
+  )
+
+  # ══════════════════════════════════════════════════════════════════════════
   # ALPHA DIVERSITY TAB
   # ══════════════════════════════════════════════════════════════════════════
   alpha_data <- reactive({
